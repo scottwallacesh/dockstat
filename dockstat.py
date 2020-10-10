@@ -5,23 +5,34 @@ Module to act as a Prometheus Exporter for Docker containers with a
 """
 
 import argparse
-import http.server
 import os.path
-import socketserver
 import sys
-import time
+from http.server import HTTPServer
 
 import docker
+from prometheus_client import (
+    CollectorRegistry,
+    Gauge,
+    generate_latest,
+    MetricsHandler,
+)
 
 LISTEN_PORT = 8080
 HEALTHY_STR = 'healthy'
 
 
-class SimpleHTTPRequestHandler(http.server.BaseHTTPRequestHandler):
+class HTTPHandler(MetricsHandler):
     """
     Class to encompass the requirements of a Prometheus Exporter
         for Docker containers with a healthcheck configured
     """
+
+    def __init__(self, *args, **kwargs):
+        self.docker_api = docker.APIClient()
+        self.docker_client = docker.from_env()
+        super().__init__(*args, **kwargs)
+
+    # Override built-in method
     # pylint: disable=invalid-name
     def do_GET(self):
         """
@@ -32,7 +43,6 @@ class SimpleHTTPRequestHandler(http.server.BaseHTTPRequestHandler):
 
         if self.path == '/healthcheck':
             self._healthcheck()
-
 
     def _healthcheck(self, message=True):
         """
@@ -50,35 +60,37 @@ class SimpleHTTPRequestHandler(http.server.BaseHTTPRequestHandler):
         if message:
             self.wfile.write(b'OK')
 
-
     def _metrics(self):
         """
         Method to handle the request for metrics
         """
         self._healthcheck(message=False)
 
-        api = docker.APIClient()
+        registry = CollectorRegistry()
 
-        client = docker.from_env()
-        for container in client.containers.list():
-            now = int(round(time.time() * 1000))
-            data = api.inspect_container(container.id)
+        gauge = Gauge(
+            'container_inspect_state_health_status',
+            "Container's healthcheck value (binary)",
+            labelnames=['id', 'name', 'value'],
+            registry=registry
+        )
+
+        for container in self.docker_client.containers.list():
+            data = self.docker_api.inspect_container(container.id)
 
             try:
                 health_str = data["State"]["Health"]["Status"]
+                label_values = [
+                    container.id,
+                    container.name,
+                    health_str,
+                ]
             except KeyError:
                 pass
             else:
-                self.wfile.write(
-                    bytes(
-                        f'container_inspect_state_health_status{{'
-                        f'id="{container.id}",'
-                        f'name="{container.name}",'
-                        f'value="{health_str}"'
-                        f'}} '
-                        f'{int(health_str == HEALTHY_STR)} {now}\n'.encode()
-                    )
-                )
+                gauge.labels(*label_values).set(int(health_str == HEALTHY_STR))
+
+        self.wfile.write(generate_latest(registry))
 
 
 def healthy():
@@ -105,7 +117,6 @@ if __name__ == '__main__':
 
         return parser.parse_args()
 
-
     def main():
         """
         main()
@@ -116,11 +127,8 @@ if __name__ == '__main__':
             # Invert the sense of 'healthy' for Unix CLI usage
             return not healthy()
 
-        Handler = SimpleHTTPRequestHandler
+        HTTPServer(('', LISTEN_PORT), HTTPHandler).serve_forever()
 
-        with socketserver.TCPServer(('', LISTEN_PORT), Handler) as httpd:
-            httpd.serve_forever()
-
-        return True
+        return 0
 
     sys.exit(main())
