@@ -64,7 +64,8 @@ class HTTPHandler(MetricsHandler):
         """
         Method to handle the request for metrics
         """
-        self._healthcheck(message=False)
+        if not self._healthcheck(message=False):
+            return
 
         registry = CollectorRegistry()
 
