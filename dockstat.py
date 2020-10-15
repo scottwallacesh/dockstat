@@ -42,29 +42,27 @@ class HTTPHandler(MetricsHandler):
             self._metrics()
 
         if self.path == '/healthcheck':
-            self._healthcheck()
+            if not healthy():
+                print('ERROR: Check requirements')
+                self._respond(500, 'ERR')
 
-    def _healthcheck(self, message=True):
-        """
-        Method to return 200 or 500 response and an optional message
-        """
-        if not healthy():
-            self.send_response(500)
-            self.end_headers()
-            if message:
-                self.wfile.write(b'ERR')
-            return
+            self._respond(200, 'OK')
 
-        self.send_response(200)
+    def _respond(self, status, message):
+        """
+        Method to output a simple HTTP status and string to the client
+        """
+        self.send_response(int(status) or 500)
         self.end_headers()
-        if message:
-            self.wfile.write(b'OK')
+        self.wfile.write(bytes(str(message).encode()))
 
     def _metrics(self):
         """
         Method to handle the request for metrics
         """
-        if not self._healthcheck(message=False):
+        if not healthy:
+            print('ERROR: Check requirements')
+            self._respond(500, 'Server not configured correctly')
             return
 
         registry = CollectorRegistry()
@@ -91,7 +89,7 @@ class HTTPHandler(MetricsHandler):
             else:
                 gauge.labels(*label_values).set(int(health_str == HEALTHY_STR))
 
-        self.wfile.write(generate_latest(registry))
+        self._respond(200, generate_latest(registry).decode())
 
 
 def healthy():
@@ -128,7 +126,11 @@ if __name__ == '__main__':
             # Invert the sense of 'healthy' for Unix CLI usage
             return not healthy()
 
-        HTTPServer(('', LISTEN_PORT), HTTPHandler).serve_forever()
+        print(f'Starting web server on port {LISTEN_PORT}')
+        try:
+            HTTPServer(('', LISTEN_PORT), HTTPHandler).serve_forever()
+        except KeyboardInterrupt:
+            print('Exiting')
 
         return 0
 
